@@ -5,8 +5,7 @@ import PreloadScene from './scenes/PreloadScene.js';
 import MenuScene from './scenes/MenuScene.js';  
 import GameScene from './scenes/GameScene.js';
 
-// Временно запускаем GameScene первой для теста
-gameConfig.scene = [PreloadScene, GameScene, MenuScene];
+gameConfig.scene = [PreloadScene, MenuScene, GameScene];
 
 // Запускаем игру
 const game = new Phaser.Game(gameConfig);
