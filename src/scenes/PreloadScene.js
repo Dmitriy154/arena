@@ -1,30 +1,42 @@
 // src/scenes/PreloadScene.js
-import Phaser from 'phaser'
+import Phaser from 'phaser';
+import { generatePerlinGrassTexture } from '../utils/textureGenerator.js';
 
 export default class PreloadScene extends Phaser.Scene {
     constructor() {
-        super('PreloadScene') // Уникальное имя сцены
+        super('PreloadScene');
     }
 
     preload() {
-        // Имитация загрузки (полоска)
-        const progressBar = this.add.graphics()
-        const progressBox = this.add.graphics()
-        progressBox.fillStyle(0x222222, 0.8)
-        progressBox.fillRect(240, 270, 320, 50)
+        // Генерация текстур
+        generatePerlinGrassTexture(this, 'grassPattern', 256);
+        
+        // Генерация спрайтов программно
+        this._generateSprite('player', 40, 40, 0x00ff00);
+        this._generateSprite('enemy', 35, 35, 0xff5555);
+        this._generateCircle('rock', 50, 50, 25, 0x7a7a7a);
 
-        this.load.on('progress', function (value) {
-            progressBar.clear()
-            progressBar.fillStyle(0xffffff, 1)
-            progressBar.fillRect(250, 280, 300 * value, 30)
-        })
+        // После загрузки всех ассетов идём в меню, а не сразу в игру
+        this.scene.start('MenuScene');
+    }
 
-        // Загружаем реальные файлы (положите их в public/assets)
-        // this.load.image('player', '/assets/player.png')
+    _generateSprite(key, width, height, color) {
+        const gfx = this.add.graphics();
+        gfx.fillStyle(color, 1);
+        gfx.fillRect(0, 0, width, height);
+        gfx.generateTexture(key, width, height);
+        gfx.destroy();
+    }
+
+    _generateCircle(key, width, height, radius, color) {
+        const gfx = this.add.graphics();
+        gfx.fillStyle(color, 1);
+        gfx.fillCircle(width/2, height/2, radius);
+        gfx.generateTexture(key, width, height);
+        gfx.destroy();
     }
 
     create() {
-        // Когда всё загрузилось, идем в Меню
-        this.scene.start('MenuScene')
+        this.scene.start('GameScene');
     }
 }
