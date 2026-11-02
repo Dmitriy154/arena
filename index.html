@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#07110c" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%232a8f5c'/%3E%3Ctext x='32' y='45' font-size='38' font-family='Arial' font-weight='bold' text-anchor='middle' fill='%2304150c'%3EA%3C/text%3E%3C/svg%3E"
+    />
+    <title>Arena</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #050b08;
+        overflow: hidden;
+      }
+
+      #game {
+        position: fixed;
+        inset: 0;
+      }
+
+      canvas {
+        display: block;
+        touch-action: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="game"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
