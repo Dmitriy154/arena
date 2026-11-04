@@ -17,6 +17,87 @@ interface PassabilityGrid {
  * (конница не входит в лес, поэтому ей нужна своя карта).
  * Путь сглаживается прямой видимостью, чтобы отряды не шли по «лесенке».
  */
+/** Двоичная куча по приоритету: A* достаёт лучший узел за O(log n). */
+class MinHeap {
+  private readonly nodes: number[] = [];
+  private readonly priorities: number[] = [];
+
+  get size(): number {
+    return this.nodes.length;
+  }
+
+  push(node: number, priority: number): void {
+    this.nodes.push(node);
+    this.priorities.push(priority);
+    this.bubbleUp(this.nodes.length - 1);
+  }
+
+  pop(): number {
+    const top = this.nodes[0];
+    const lastNode = this.nodes.pop() as number;
+    const lastPriority = this.priorities.pop() as number;
+
+    if (this.nodes.length > 0) {
+      this.nodes[0] = lastNode;
+      this.priorities[0] = lastPriority;
+      this.sinkDown(0);
+    }
+
+    return top;
+  }
+
+  private bubbleUp(start: number): void {
+    let index = start;
+
+    while (index > 0) {
+      const parent = (index - 1) >> 1;
+
+      if (this.priorities[parent] <= this.priorities[index]) {
+        return;
+      }
+
+      this.swap(parent, index);
+      index = parent;
+    }
+  }
+
+  private sinkDown(start: number): void {
+    let index = start;
+    const length = this.nodes.length;
+
+    for (;;) {
+      const left = index * 2 + 1;
+      const right = left + 1;
+      let smallest = index;
+
+      if (left < length && this.priorities[left] < this.priorities[smallest]) {
+        smallest = left;
+      }
+
+      if (right < length && this.priorities[right] < this.priorities[smallest]) {
+        smallest = right;
+      }
+
+      if (smallest === index) {
+        return;
+      }
+
+      this.swap(index, smallest);
+      index = smallest;
+    }
+  }
+
+  private swap(a: number, b: number): void {
+    const node = this.nodes[a];
+    const priority = this.priorities[a];
+
+    this.nodes[a] = this.nodes[b];
+    this.priorities[a] = this.priorities[b];
+    this.nodes[b] = node;
+    this.priorities[b] = priority;
+  }
+}
+
 export class Pathfinder {
   private readonly terrain: Terrain;
   private readonly cols: number;
@@ -104,26 +185,19 @@ export class Pathfinder {
     const fScore = new Float32Array(size).fill(Number.POSITIVE_INFINITY);
     const cameFrom = new Int32Array(size).fill(-1);
     const closed = new Uint8Array(size);
-    const open: number[] = [];
+    // Куча вместо перебора открытого списка: на сетке 96x54 линейный поиск
+    // минимума давал сотни миллисекунд на один приказ отряду.
+    const open = new MinHeap();
 
     gScore[startIndex] = 0;
     fScore[startIndex] = this.heuristic(startIndex, goalIndex);
-    open.push(startIndex);
+    open.push(startIndex, fScore[startIndex]);
 
     let bestIndex = startIndex;
     let bestEstimate = fScore[startIndex];
 
-    while (open.length > 0) {
-      let pick = 0;
-
-      for (let index = 1; index < open.length; index += 1) {
-        if (fScore[open[index]] < fScore[open[pick]]) {
-          pick = index;
-        }
-      }
-
-      const current = open[pick];
-      open.splice(pick, 1);
+    while (open.size > 0) {
+      const current = open.pop();
 
       if (closed[current]) {
         continue;
@@ -197,10 +271,7 @@ export class Pathfinder {
           cameFrom[next] = current;
           gScore[next] = tentative;
           fScore[next] = tentative + this.heuristic(next, goalIndex);
-
-          if (!open.includes(next)) {
-            open.push(next);
-          }
+          open.push(next, fScore[next]);
         }
       }
     }

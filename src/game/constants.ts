@@ -1,12 +1,12 @@
 export const VIEW_WIDTH = 1280;
 export const VIEW_HEIGHT = 720;
 
-export const WORLD_WIDTH = 1920;
-export const WORLD_HEIGHT = 1080;
+export const WORLD_WIDTH = 3840;
+export const WORLD_HEIGHT = 2160;
 export const WORLD_MARGIN = 70;
 
 export const UNIT_SIZE = 50;
-export const FORMATION_SPACING = UNIT_SIZE + 16;
+export const FORMATION_SPACING = UNIT_SIZE + 38;
 /** Радиус поиска проходимой точки для слота строя. */
 export const FORMATION_SNAP_RADIUS = 220;
 /** Шаг кольцевого поиска проходимой точки. */
@@ -44,6 +44,12 @@ export const VISION_BRUSH_TEXTURE = 'vision-brush';
 export const VISION_BRUSH_SCALES = [1, 0.8, 0.6, 0.4] as const;
 export const visionBrushKey = (index: number): string =>
   `${VISION_BRUSH_TEXTURE}-${index}`;
+/**
+ * Разрешение слоёв тумана относительно мира: кисти и текстуры считаются
+ * в этих единицах. Туман мягкий, поэтому четверти разрешения хватает,
+ * а пикселей в 16 раз меньше, чем в полном размере мира.
+ */
+export const FOG_RESOLUTION = 0.25;
 
 /** Размер клетки сетки проходимости для A*. */
 export const PATH_CELL_SIZE = 40;

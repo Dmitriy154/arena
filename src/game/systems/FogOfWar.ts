@@ -2,6 +2,7 @@ import Phaser from 'phaser';
 import {
   COLORS,
   FOG_EXPLORE_STEP,
+  FOG_RESOLUTION,
   FOG_SHROUD_ALPHA,
   VISION_BRUSH_SCALES,
   VISION_RADIUS,
@@ -13,19 +14,28 @@ import type { Terrain } from './Terrain';
 const EXPLORE_STEP_SQUARED = FOG_EXPLORE_STEP * FOG_EXPLORE_STEP;
 
 /**
- * Два слоя тумана поверх мира:
- * 1. unexplored — сплошная тьма, стирается навсегда там, где уже были свои отряды;
- * 2. shroud — полупрозрачная дымка, перерисовывается каждый кадр по текущему обзору.
- * Отряды противника вне текущего обзора просто скрываются.
+ * Туман войны двумя слоями в разрешении FOG_RESOLUTION от мира:
+ * 1. explored — «уже видели»: чёрная пелена, стирается навсегда там, где прошли свои;
+ * 2. shroud — полупрозрачная дымка по текущему обзору, перерисовывается при движении.
+ *
+ * Оба слоя привязаны к миру, а не к кадру: при панораме пересчитывать нечего,
+ * поэтому дымка не может отставать от камеры или дёргаться на её краях.
+ *
+ * Круги обзора стираются одним пакетом (beginDraw → batchDrawFrame → endDraw):
+ * каждый отдельный erase — это полный blit текстуры, и на шесть отрядов он
+ * стоил дороже всего кадра.
  *
  * Требует WebGL: стирание идёт через blend mode ERASE.
  */
 export class FogOfWar {
-  private readonly unexplored: Phaser.GameObjects.RenderTexture;
+  private readonly explored: Phaser.GameObjects.RenderTexture;
   private readonly shroud: Phaser.GameObjects.RenderTexture;
   private readonly lastReveal = new Map<Unit, Phaser.Math.Vector2>();
+  private readonly lastBuild: Phaser.Math.Vector2[] = [];
   private readonly players: Unit[] = [];
   private readonly terrain: Terrain;
+
+  private built = false;
 
   constructor(
     scene: Phaser.Scene,
@@ -36,12 +46,18 @@ export class FogOfWar {
   ) {
     this.terrain = terrain;
 
-    this.unexplored = scene.add.renderTexture(0, 0, width, height).setOrigin(0);
-    this.unexplored.fill(COLORS.fog, 1);
+    this.explored = scene.add
+      .renderTexture(0, 0, Math.ceil(width * FOG_RESOLUTION), Math.ceil(height * FOG_RESOLUTION))
+      .setOrigin(0)
+      .setScale(1 / FOG_RESOLUTION);
+    this.explored.fill(COLORS.fog, 1);
 
-    this.shroud = scene.add.renderTexture(0, 0, width, height).setOrigin(0);
+    this.shroud = scene.add
+      .renderTexture(0, 0, Math.ceil(width * FOG_RESOLUTION), Math.ceil(height * FOG_RESOLUTION))
+      .setOrigin(0)
+      .setScale(1 / FOG_RESOLUTION);
 
-    layer.add([this.unexplored, this.shroud]);
+    layer.add([this.explored, this.shroud]);
   }
 
   update(units: readonly Unit[]): void {
@@ -53,20 +69,30 @@ export class FogOfWar {
       }
     }
 
-    this.shroud.clear();
+    if (this.built && !this.hasMoved()) {
+      return;
+    }
+
+    // fill сам очищает текстуру при привязке — отдельный clear не нужен.
     this.shroud.fill(COLORS.fog, FOG_SHROUD_ALPHA);
+    this.shroud.beginDraw();
 
     for (const unit of this.players) {
-      const radius = this.visionRadiusOf(unit);
-      this.eraseCircle(this.shroud, unit.x, unit.y, radius);
-      this.reveal(unit, radius);
+      this.stampBrush(this.shroud, unit.x, unit.y, this.visionRadiusOf(unit));
     }
+
+    this.shroud.endDraw(true);
+
+    this.revealExplored();
 
     for (const unit of units) {
       if (!unit.isPlayerControlled) {
         unit.setVisible(this.isPointVisible(unit.x, unit.y));
       }
     }
+
+    this.rememberPositions();
+    this.built = true;
   }
 
   /** Обзор отряда с учётом того, насколько глубоко он стоит в лесу. */
@@ -94,34 +120,85 @@ export class FogOfWar {
     return false;
   }
 
-  /** Постоянное открытие карты: стираем тьму только когда отряд отошёл достаточно далеко. */
-  private reveal(unit: Unit, radius: number): void {
-    const last = this.lastReveal.get(unit);
-
-    if (last) {
-      if (Phaser.Math.Distance.Squared(last.x, last.y, unit.x, unit.y) < EXPLORE_STEP_SQUARED) {
-        return;
-      }
-
-      last.set(unit.x, unit.y);
-    } else {
-      this.lastReveal.set(unit, new Phaser.Math.Vector2(unit.x, unit.y));
+  /** Сдвинулся ли хоть один свой отряд с момента последней перерисовки. */
+  private hasMoved(): boolean {
+    if (this.lastBuild.length !== this.players.length) {
+      return true;
     }
 
-    this.eraseCircle(this.unexplored, unit.x, unit.y, radius);
+    for (let index = 0; index < this.players.length; index += 1) {
+      const unit = this.players[index];
+      const last = this.lastBuild[index];
+
+      if (Math.abs(unit.x - last.x) > 1 || Math.abs(unit.y - last.y) > 1) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
-  private eraseCircle(
-    target: Phaser.GameObjects.RenderTexture,
+  private rememberPositions(): void {
+    this.lastBuild.length = this.players.length;
+
+    for (let index = 0; index < this.players.length; index += 1) {
+      const unit = this.players[index];
+      const slot = this.lastBuild[index] ?? new Phaser.Math.Vector2();
+
+      slot.set(unit.x, unit.y);
+      this.lastBuild[index] = slot;
+    }
+  }
+
+  /**
+   * Постоянное открытие карты: стираем тьму только когда отряд отошёл
+   * достаточно далеко, и одним пакетом на всех, кто сдвинулся.
+   */
+  private revealExplored(): void {
+    let pending = false;
+
+    for (const unit of this.players) {
+      const last = this.lastReveal.get(unit);
+
+      if (last) {
+        if (Phaser.Math.Distance.Squared(last.x, last.y, unit.x, unit.y) < EXPLORE_STEP_SQUARED) {
+          continue;
+        }
+
+        last.set(unit.x, unit.y);
+      } else {
+        this.lastReveal.set(unit, new Phaser.Math.Vector2(unit.x, unit.y));
+      }
+
+      if (!pending) {
+        this.explored.beginDraw();
+        pending = true;
+      }
+
+      this.stampBrush(this.explored, unit.x, unit.y, this.visionRadiusOf(unit));
+    }
+
+    if (pending) {
+      this.explored.endDraw(true);
+    }
+  }
+
+  /** Кисть обзора в пакете: координаты — левый верхний угол, не центр. */
+  private stampBrush(
+    texture: Phaser.GameObjects.RenderTexture,
     x: number,
     y: number,
     radius: number,
   ): void {
     const brushIndex = this.brushIndexFor(radius);
-    const brushRadius = VISION_RADIUS * VISION_BRUSH_SCALES[brushIndex];
+    const brushRadius = VISION_RADIUS * VISION_BRUSH_SCALES[brushIndex] * FOG_RESOLUTION;
 
-    // Для текстуры координаты draw/erase — левый верхний угол, а не центр.
-    target.erase(visionBrushKey(brushIndex), x - brushRadius, y - brushRadius);
+    texture.batchDrawFrame(
+      visionBrushKey(brushIndex),
+      undefined,
+      x * FOG_RESOLUTION - brushRadius,
+      y * FOG_RESOLUTION - brushRadius,
+    );
   }
 
   /** Ближайшая по масштабу кисть: обзор в чаще меньше, круг тумана тоже. */

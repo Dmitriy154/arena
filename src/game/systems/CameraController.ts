@@ -5,6 +5,7 @@ import {
   CAMERA_PAN_SPEED,
   CAMERA_ZOOM_SMOOTHING,
   CAMERA_ZOOM_STEP,
+  DRAG_THRESHOLD,
   WORLD_HEIGHT,
   WORLD_WIDTH,
 } from '../constants';
@@ -14,10 +15,6 @@ interface MovementKeys {
   down: Phaser.Input.Keyboard.Key;
   left: Phaser.Input.Keyboard.Key;
   right: Phaser.Input.Keyboard.Key;
-  arrowUp: Phaser.Input.Keyboard.Key;
-  arrowDown: Phaser.Input.Keyboard.Key;
-  arrowLeft: Phaser.Input.Keyboard.Key;
-  arrowRight: Phaser.Input.Keyboard.Key;
 }
 
 export class CameraController {
@@ -28,6 +25,7 @@ export class CameraController {
 
   private targetZoom: number;
   private panning = false;
+  private panDistance = 0;
   private lastPanX = 0;
   private lastPanY = 0;
   private modifierDown = false;
@@ -43,20 +41,13 @@ export class CameraController {
       throw new Error('Keyboard input is not available.');
     }
 
-    const keys = keyboard.addKeys('W,A,S,D,UP,DOWN,LEFT,RIGHT') as Record<
-      string,
-      Phaser.Input.Keyboard.Key
-    >;
+    const keys = keyboard.addKeys('W,A,S,D') as Record<string, Phaser.Input.Keyboard.Key>;
 
     this.keys = {
       up: keys.W,
       down: keys.S,
       left: keys.A,
       right: keys.D,
-      arrowUp: keys.UP,
-      arrowDown: keys.DOWN,
-      arrowLeft: keys.LEFT,
-      arrowRight: keys.RIGHT,
     };
 
     keyboard.on(Phaser.Input.Keyboard.Events.ANY_KEY_DOWN, this.onKeyDown, this);
@@ -77,13 +68,12 @@ export class CameraController {
   }
 
   private updateKeyboardPan(delta: number): void {
-    const right = this.keys.right.isDown || this.keys.arrowRight.isDown;
+    const right = this.keys.right.isDown;
     // Ctrl/Cmd + A is reserved for selecting all units in BattleScene, so the
     // A key must not pan the camera while a modifier is held.
-    const left =
-      !this.modifierDown && (this.keys.left.isDown || this.keys.arrowLeft.isDown);
-    const down = this.keys.down.isDown || this.keys.arrowDown.isDown;
-    const up = this.keys.up.isDown || this.keys.arrowUp.isDown;
+    const left = !this.modifierDown && this.keys.left.isDown;
+    const down = this.keys.down.isDown;
+    const up = this.keys.up.isDown;
 
     let dx = (right ? 1 : 0) - (left ? 1 : 0);
     let dy = (down ? 1 : 0) - (up ? 1 : 0);
@@ -170,12 +160,18 @@ export class CameraController {
     );
   }
 
+  /** true — последнее зажатие кнопки мыши превратилось в панораму, а не в клик. */
+  didDragPan(): boolean {
+    return this.panDistance > DRAG_THRESHOLD;
+  }
+
   private onPointerDown(pointer: Phaser.Input.Pointer): void {
-    if (!pointer.middleButtonDown()) {
+    if (!pointer.middleButtonDown() && !pointer.rightButtonDown()) {
       return;
     }
 
     this.panning = true;
+    this.panDistance = 0;
     this.lastPanX = pointer.x;
     this.lastPanY = pointer.y;
   }
@@ -185,19 +181,23 @@ export class CameraController {
       return;
     }
 
-    if (!pointer.middleButtonDown()) {
+    if (!pointer.middleButtonDown() && !pointer.rightButtonDown()) {
       this.panning = false;
       return;
     }
 
-    this.camera.scrollX -= (pointer.x - this.lastPanX) / this.camera.zoom;
-    this.camera.scrollY -= (pointer.y - this.lastPanY) / this.camera.zoom;
+    const dx = pointer.x - this.lastPanX;
+    const dy = pointer.y - this.lastPanY;
+
+    this.panDistance += Math.hypot(dx, dy);
+    this.camera.scrollX -= dx / this.camera.zoom;
+    this.camera.scrollY -= dy / this.camera.zoom;
     this.lastPanX = pointer.x;
     this.lastPanY = pointer.y;
   }
 
   private onPointerUp(pointer: Phaser.Input.Pointer): void {
-    if (pointer.button === 1) {
+    if (pointer.button === 1 || pointer.button === 2) {
       this.panning = false;
     }
   }

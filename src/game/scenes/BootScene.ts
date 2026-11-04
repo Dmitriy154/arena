@@ -1,5 +1,10 @@
 import Phaser from 'phaser';
-import { VISION_BRUSH_SCALES, VISION_RADIUS, visionBrushKey } from '../constants';
+import {
+  FOG_RESOLUTION,
+  VISION_BRUSH_SCALES,
+  VISION_RADIUS,
+  visionBrushKey,
+} from '../constants';
 
 const GRASS_TEXTURE_SIZE = 256;
 
@@ -23,7 +28,8 @@ export class BootScene extends Phaser.Scene {
         return;
       }
 
-      const radius = VISION_RADIUS * scale;
+      // Кисти сразу в разрешении тумана: слой рисуется уменьшенным и растягивается.
+      const radius = VISION_RADIUS * scale * FOG_RESOLUTION;
       const size = radius * 2;
       const texture = this.textures.createCanvas(key, size, size);
 

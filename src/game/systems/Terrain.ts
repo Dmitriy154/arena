@@ -37,15 +37,16 @@ const CAVALRY: ReadonlySet<UnitTypeId> = new Set<UnitTypeId>(['LC', 'HC']);
 
 /**
  * Раскладка местности в мировых координатах. Патчи — эллипсы.
- * Держать свободными: центр (960, 540) — старт игрока,
- * прямоугольник x 1360..1600, y 380..640 — стартовые отряды врага.
+ * Держать свободными: зону старта игрока вокруг (960, 1080) и
+ * зону старта врага вокруг (2880, 1080) — по 700 px в стороны.
  */
 export const TERRAIN_PATCHES: readonly TerrainPatch[] = [
-  { kind: 'water', x: 700, y: 240, radiusX: 230, radiusY: 130 },
-  { kind: 'water', x: 1620, y: 880, radiusX: 180, radiusY: 100 },
-  { kind: 'forest', x: 1150, y: 250, radiusX: 210, radiusY: 170 },
-  { kind: 'forest', x: 520, y: 800, radiusX: 220, radiusY: 150 },
-  { kind: 'forest', x: 1150, y: 900, radiusX: 190, radiusY: 120 },
+  { kind: 'water', x: 1400, y: 480, radiusX: 460, radiusY: 260 },
+  { kind: 'water', x: 3240, y: 1760, radiusX: 360, radiusY: 200 },
+  { kind: 'forest', x: 2300, y: 500, radiusX: 420, radiusY: 340 },
+  { kind: 'forest', x: 1040, y: 1750, radiusX: 440, radiusY: 260 },
+  { kind: 'forest', x: 2300, y: 1800, radiusX: 380, radiusY: 240 },
+  { kind: 'forest', x: 1920, y: 1080, radiusX: 380, radiusY: 300 },
 ];
 
 export class Terrain {

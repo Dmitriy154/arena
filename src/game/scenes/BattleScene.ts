@@ -20,22 +20,27 @@ import { Terrain } from '../systems/Terrain';
 import { FACTIONS, UNIT_TYPES, type FactionDefinition, type UnitTypeId } from '../types';
 
 const HINT_TEXT =
-  'ЛКМ — выбор · Shift — добавить · ПКМ — приказ · колесо — зум · WASD / стрелки — камера · СКМ — панорама · Esc — сброс · M — меню';
+  'ЛКМ — выбор · Shift — добавить · ПКМ — приказ · ПКМ с перетаскиванием — панорама · колесо — зум · WASD — камера · Esc — сброс · M — меню';
 
+/** Точки развёртывания: игрок в левой четверти мира, враг — в правой. */
+const PLAYER_CENTER = new Phaser.Math.Vector2(WORLD_WIDTH * 0.25, WORLD_HEIGHT * 0.5);
+const ENEMY_CENTER = new Phaser.Math.Vector2(WORLD_WIDTH * 0.75, WORLD_HEIGHT * 0.5);
+
+/** Строй игрока: пехота в линии, стрелки за центром, конница на флангах. */
 const PLAYER_FORMATION: Array<{ type: UnitTypeId; offsetX: number; offsetY: number }> = [
-  { type: 'LI', offsetX: -70, offsetY: -60 },
-  { type: 'HI', offsetX: 70, offsetY: -60 },
-  { type: 'SP', offsetX: -70, offsetY: 60 },
-  { type: 'AR', offsetX: 70, offsetY: 60 },
-  { type: 'LC', offsetX: -210, offsetY: 0 },
-  { type: 'HC', offsetX: 210, offsetY: 0 },
+  { type: 'LI', offsetX: -210, offsetY: 90 },
+  { type: 'HI', offsetX: 210, offsetY: 90 },
+  { type: 'SP', offsetX: 0, offsetY: 90 },
+  { type: 'AR', offsetX: 0, offsetY: 250 },
+  { type: 'LC', offsetX: -470, offsetY: 30 },
+  { type: 'HC', offsetX: 470, offsetY: 30 },
 ];
 
-const ENEMY_FORMATION: Array<{ type: UnitTypeId; x: number; y: number }> = [
-  { type: 'SP', x: 1400, y: 420 },
-  { type: 'SP', x: 1400, y: 545 },
-  { type: 'HI', x: 1545, y: 470 },
-  { type: 'AR', x: 1545, y: 600 },
+const ENEMY_FORMATION: Array<{ type: UnitTypeId; offsetX: number; offsetY: number }> = [
+  { type: 'SP', offsetX: -160, offsetY: 90 },
+  { type: 'SP', offsetX: 160, offsetY: 90 },
+  { type: 'HI', offsetX: 0, offsetY: 90 },
+  { type: 'AR', offsetX: 0, offsetY: 250 },
 ];
 
 export class BattleScene extends Phaser.Scene {
@@ -51,6 +56,7 @@ export class BattleScene extends Phaser.Scene {
   private statsText!: Phaser.GameObjects.Text;
   private detailText!: Phaser.GameObjects.Text;
   private zoomText!: Phaser.GameObjects.Text;
+  private fpsText!: Phaser.GameObjects.Text;
   private shiftKey!: Phaser.Input.Keyboard.Key;
 
   private readonly units: Unit[] = [];
@@ -61,6 +67,11 @@ export class BattleScene extends Phaser.Scene {
   private dragMoved = false;
   private lastZoomPercent = -1;
   private visibleEnemyCount = 0;
+  private fpsFrames = 0;
+  private fpsElapsed = 0;
+  private worstFrame = 0;
+  private fogMs = 0;
+  private unitMs = 0;
   private wasMoving = false;
   private leaving = false;
 
@@ -77,12 +88,14 @@ export class BattleScene extends Phaser.Scene {
     this.lastZoomPercent = -1;
     this.visibleEnemyCount = 0;
     this.wasMoving = false;
+    this.fpsFrames = 0;
+    this.fpsElapsed = 0;
     this.leaving = false;
 
     const camera = this.cameras.main;
     camera.setBackgroundColor(COLORS.background);
     camera.setZoom(CAMERA_START_ZOOM);
-    camera.centerOn(WORLD_WIDTH / 2, WORLD_HEIGHT / 2);
+    camera.centerOn(PLAYER_CENTER.x, PLAYER_CENTER.y);
 
     this.worldLayer = this.add.container(0, 0);
     this.buildWorld();
@@ -114,6 +127,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.cameraController.update(delta);
 
+    const unitsStarted = performance.now();
     let anyMoving = false;
     for (const unit of this.units) {
       unit.update(delta, this.terrain);
@@ -121,8 +135,11 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const separated = this.separateUnits();
+    this.unitMs += performance.now() - unitsStarted;
 
+    const fogStarted = performance.now();
     this.fog.update(this.units);
+    this.fogMs += performance.now() - fogStarted;
     this.refreshVisibleEnemies();
 
     if (anyMoving || this.wasMoving || separated) {
@@ -131,6 +148,7 @@ export class BattleScene extends Phaser.Scene {
 
     this.wasMoving = anyMoving;
     this.updateZoomHud();
+    this.updateFpsHud(delta);
   }
 
   private buildWorld(): void {
@@ -212,20 +230,22 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private spawnUnits(): void {
-    const centerX = WORLD_WIDTH / 2;
-    const centerY = WORLD_HEIGHT / 2;
-
     for (const spawn of PLAYER_FORMATION) {
       this.addUnit(
-        centerX + spawn.offsetX,
-        centerY + spawn.offsetY,
+        PLAYER_CENTER.x + spawn.offsetX,
+        PLAYER_CENTER.y + spawn.offsetY,
         spawn.type,
         FACTIONS.player,
       );
     }
 
     for (const spawn of ENEMY_FORMATION) {
-      this.addUnit(spawn.x, spawn.y, spawn.type, FACTIONS.enemy);
+      this.addUnit(
+        ENEMY_CENTER.x + spawn.offsetX,
+        ENEMY_CENTER.y + spawn.offsetY,
+        spawn.type,
+        FACTIONS.enemy,
+      );
     }
   }
 
@@ -273,7 +293,7 @@ export class BattleScene extends Phaser.Scene {
     });
 
     const zoomPanel = this.add
-      .rectangle(VIEW_WIDTH - 24, 24, 152, 40, COLORS.panel, 0.82)
+      .rectangle(VIEW_WIDTH - 24, 24, 152, 64, COLORS.panel, 0.82)
       .setOrigin(1, 0)
       .setStrokeStyle(1, 0x3f7f5b, 0.55);
 
@@ -282,6 +302,12 @@ export class BattleScene extends Phaser.Scene {
         fontFamily: FONT_FAMILY,
         fontSize: '14px',
         color: COLORS.text,
+      })
+      .setOrigin(1, 0.5);    this.fpsText = this.add
+      .text(VIEW_WIDTH - 40, 68, '', {
+        fontFamily: FONT_FAMILY,
+        fontSize: '12px',
+        color: COLORS.textMuted,
       })
       .setOrigin(1, 0.5);
 
@@ -306,13 +332,14 @@ export class BattleScene extends Phaser.Scene {
       this.detailText,
       zoomPanel,
       this.zoomText,
+      this.fpsText,
       hintPanel,
       hint,
     ]);
 
     this.hudBounds.push(
       new Phaser.Geom.Rectangle(24, 24, 360, 116),
-      new Phaser.Geom.Rectangle(VIEW_WIDTH - 24 - 152, 24, 152, 40),
+      new Phaser.Geom.Rectangle(VIEW_WIDTH - 24 - 152, 24, 152, 64),
       new Phaser.Geom.Rectangle(24, VIEW_HEIGHT - 20 - 34, hint.width + 32, 34),
     );
   }
@@ -400,7 +427,8 @@ export class BattleScene extends Phaser.Scene {
 
   private handlePointerUp(pointer: Phaser.Input.Pointer): void {
     if (pointer.button === 2) {
-      if (!this.dragStart && !this.isPointerOverHud(pointer)) {
+      // Панорама правой кнопкой не должна превращаться в приказ на движение.
+      if (!this.dragStart && !this.isPointerOverHud(pointer) && !this.cameraController.didDragPan()) {
         this.issueMoveCommand(this.getPointerWorld(pointer));
       }
       return;
@@ -771,6 +799,31 @@ export class BattleScene extends Phaser.Scene {
     this.detailText.setText(
       `HP ${unit.hp}/${unit.maxHp}   ·   скорость ${unit.stats.speed}   ·   мораль ${unit.stats.morale}   ·   масса ${unit.stats.mass.toFixed(1)}`,
     );
+  }
+
+  /** Счётчик гладкости: обновляем дважды в секунду, чтобы не дёргать текст каждый кадр. */
+  private updateFpsHud(delta: number): void {
+    this.fpsFrames += 1;
+    this.fpsElapsed += delta;
+    this.worstFrame = Math.max(this.worstFrame, delta);
+
+    if (this.fpsElapsed < 500) {
+      return;
+    }
+
+    const fps = Math.round((this.fpsFrames * 1000) / this.fpsElapsed);
+    const frameMs = (this.fpsElapsed / this.fpsFrames).toFixed(1);
+    const worst = Math.round(this.worstFrame);
+    const fog = (this.fogMs / this.fpsFrames).toFixed(1);
+    const units = (this.unitMs / this.fpsFrames).toFixed(1);
+
+    // Разбивка по кадру: видно, что именно съедает время — туман или отряды.
+    this.fpsText.setText(`FPS ${fps} · ${frameMs} мс · макс ${worst} · туман ${fog} · отряды ${units}`);
+    this.fpsFrames = 0;
+    this.fpsElapsed = 0;
+    this.worstFrame = 0;
+    this.fogMs = 0;
+    this.unitMs = 0;
   }
 
   private updateZoomHud(): void {
