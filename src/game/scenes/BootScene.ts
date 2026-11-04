@@ -1,4 +1,5 @@
 import Phaser from 'phaser';
+import { VISION_BRUSH_SCALES, VISION_RADIUS, visionBrushKey } from '../constants';
 
 const GRASS_TEXTURE_SIZE = 256;
 
@@ -9,7 +10,47 @@ export class BootScene extends Phaser.Scene {
 
   create(): void {
     this.createGrassTexture();
+    this.createVisionBrushTextures();
     this.scene.start('MenuScene');
+  }
+
+  /** Мягкие белые пятна разного размера: ими стирается туман вокруг отрядов. */
+  private createVisionBrushTextures(): void {
+    VISION_BRUSH_SCALES.forEach((scale, index) => {
+      const key = visionBrushKey(index);
+
+      if (this.textures.exists(key)) {
+        return;
+      }
+
+      const radius = VISION_RADIUS * scale;
+      const size = radius * 2;
+      const texture = this.textures.createCanvas(key, size, size);
+
+      if (!texture) {
+        return;
+      }
+
+      const context = texture.context;
+      const center = size / 2;
+      const gradient = context.createRadialGradient(
+        center,
+        center,
+        radius * 0.45,
+        center,
+        center,
+        radius,
+      );
+
+      gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+      gradient.addColorStop(0.65, 'rgba(255, 255, 255, 1)');
+      gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, size, size);
+
+      texture.refresh();
+    });
   }
 
   private createGrassTexture(): void {
