@@ -19,6 +19,11 @@ export class Unit extends Phaser.GameObjects.Container {
   private readonly path: Phaser.Math.Vector2[] = [];
   private selected = false;
   private hovered = false;
+  private facingRad = 0;
+  private pendingFacing: number | null = null;
+  private postPoint: Phaser.Math.Vector2 | null = null;
+  private postFacingRad = 0;
+  private postIndexValue = -1;
 
   constructor(
     scene: Phaser.Scene,
@@ -93,9 +98,39 @@ export class Unit extends Phaser.GameObjects.Container {
     this.hoverFrame.setVisible(this.hovered && !this.selected);
   }
 
-  /** Приказ на движение по точкам маршрута. */
-  moveAlong(points: readonly Phaser.Math.Vector2[]): void {
+  /** Направление фронта отряда, радианы. Картинка пока не вращается. */
+  get facing(): number {
+    return this.facingRad;
+  }
+
+  /** Место в строю, куда отряд должен вернуться, если его столкнули. */
+  get post(): Phaser.Math.Vector2 | null {
+    return this.postPoint;
+  }
+
+  get postFacing(): number {
+    return this.postFacingRad;
+  }
+
+  /** Место в строю по порядку чтения; -1 — отряд ещё не строился. */
+  get postIndex(): number {
+    return this.postIndexValue;
+  }
+
+  assignPost(point: Phaser.Math.Vector2, facing: number, index: number): void {
+    this.postPoint = new Phaser.Math.Vector2(point.x, point.y);
+    this.postFacingRad = Phaser.Math.Angle.Wrap(facing);
+    this.postIndexValue = index;
+  }
+
+  /**
+   * Приказ на движение по точкам маршрута. Угол фронта применяется по прибытии:
+   * в пути отряд ещё не встал в строй.
+   */
+  moveAlong(points: readonly Phaser.Math.Vector2[], facing?: number): void {
     this.path.length = 0;
+    this.pendingFacing =
+      facing === undefined || points.length === 0 ? null : Phaser.Math.Angle.Wrap(facing);
 
     for (const point of points) {
       this.path.push(new Phaser.Math.Vector2(point.x, point.y));
@@ -104,6 +139,7 @@ export class Unit extends Phaser.GameObjects.Container {
 
   stop(): void {
     this.path.length = 0;
+    this.pendingFacing = null;
   }
 
   isMoving(): boolean {
@@ -137,7 +173,7 @@ export class Unit extends Phaser.GameObjects.Container {
     const distance = Math.hypot(dx, dy);
 
     if (distance < 0.5) {
-      this.path.shift();
+      this.advance();
       return;
     }
 
@@ -157,7 +193,16 @@ export class Unit extends Phaser.GameObjects.Container {
     this.setPosition(nextX, nextY);
 
     if (step >= distance) {
-      this.path.shift();
+      this.advance();
+    }
+  }
+
+  private advance(): void {
+    this.path.shift();
+
+    if (this.path.length === 0 && this.pendingFacing !== null) {
+      this.facingRad = this.pendingFacing;
+      this.pendingFacing = null;
     }
   }
 }

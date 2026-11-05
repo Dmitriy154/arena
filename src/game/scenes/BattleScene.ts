@@ -4,7 +4,12 @@ import {
   COLORS,
   DRAG_THRESHOLD,
   FONT_FAMILY,
+  FORMATION_RIGID_DRAG,
+  FORMATION_RIGID_MIN_TURN,
   FORMATION_SPACING,
+  FORMATION_SETTLE_COOLDOWN,
+  FORMATION_SETTLE_RANGE,
+  FORMATION_SETTLE_TOLERANCE,
   UNIT_SIZE,
   VIEW_HEIGHT,
   VIEW_WIDTH,
@@ -14,13 +19,22 @@ import {
 } from '../constants';
 import { Unit } from '../entities/Unit';
 import { CameraController } from '../systems/CameraController';
+import { CursorView } from '../systems/CursorView';
 import { FogOfWar } from '../systems/FogOfWar';
+import { columnsForDrag, directionFrom } from '../systems/Formation';
+import { FormationPreview } from '../systems/FormationPreview';
+import { MoveOrderSystem } from '../systems/MoveOrderSystem';
 import { Pathfinder } from '../systems/Pathfinder';
 import { Terrain } from '../systems/Terrain';
 import { FACTIONS, UNIT_TYPES, type FactionDefinition, type UnitTypeId } from '../types';
 
-const HINT_TEXT =
-  'ЛКМ — выбор · Shift — добавить · ПКМ — приказ · ПКМ с перетаскиванием — панорама · колесо — зум · WASD — камера · Esc — сброс · M — меню';
+const HINT_TEXT = [
+  'ЛКМ — выбор и рамка · Shift — добавить · ПКМ — приказ · ПКМ с протяжкой — строй с поворотом',
+  'R — вернуть в строй · камера — стрелки, WASD, край экрана · колесо — зум · Esc — сброс · M — меню',
+].join('\n');
+
+/** Что делает зажатая кнопка: ЛКМ — рамка, ПКМ — приказ или строй. */
+type PointerMode = 'idle' | 'box' | 'order';
 
 /** Точки развёртывания: игрок в левой четверти мира, враг — в правой. */
 const PLAYER_CENTER = new Phaser.Math.Vector2(WORLD_WIDTH * 0.25, WORLD_HEIGHT * 0.5);
@@ -28,9 +42,13 @@ const ENEMY_CENTER = new Phaser.Math.Vector2(WORLD_WIDTH * 0.75, WORLD_HEIGHT * 
 
 /** Строй игрока: пехота в линии, стрелки за центром, конница на флангах. */
 const PLAYER_FORMATION: Array<{ type: UnitTypeId; offsetX: number; offsetY: number }> = [
+  { type: 'LI', offsetX: -350, offsetY: 90 },
   { type: 'LI', offsetX: -210, offsetY: 90 },
-  { type: 'HI', offsetX: 210, offsetY: 90 },
   { type: 'SP', offsetX: 0, offsetY: 90 },
+  { type: 'HI', offsetX: 210, offsetY: 90 },
+  { type: 'HI', offsetX: 350, offsetY: 90 },
+  { type: 'SP', offsetX: -140, offsetY: 250 },
+  { type: 'AR', offsetX: 140, offsetY: 250 },
   { type: 'AR', offsetX: 0, offsetY: 250 },
   { type: 'LC', offsetX: -470, offsetY: 30 },
   { type: 'HC', offsetX: 470, offsetY: 30 },
@@ -61,10 +79,15 @@ export class BattleScene extends Phaser.Scene {
 
   private readonly units: Unit[] = [];
   private readonly selected = new Set<Unit>();
+  private readonly settleCooldown = new Map<Unit, number>();
   private readonly hudBounds: Phaser.Geom.Rectangle[] = [];
-  private readonly pointerDownScreen = new Phaser.Math.Vector2();
-  private dragStart: Phaser.Math.Vector2 | null = null;
-  private dragMoved = false;
+  private readonly pressScreen = new Phaser.Math.Vector2();
+  private formationPreview!: FormationPreview;
+  private moveOrders!: MoveOrderSystem;
+  private cursorView!: CursorView;
+  private pointerInsideCanvas = true;
+  private pressWorld: Phaser.Math.Vector2 | null = null;
+  private pointerMode: PointerMode = 'idle';
   private lastZoomPercent = -1;
   private visibleEnemyCount = 0;
   private fpsFrames = 0;
@@ -83,8 +106,8 @@ export class BattleScene extends Phaser.Scene {
     this.units.length = 0;
     this.selected.clear();
     this.hudBounds.length = 0;
-    this.dragStart = null;
-    this.dragMoved = false;
+    this.pressWorld = null;
+    this.pointerMode = 'idle';
     this.lastZoomPercent = -1;
     this.visibleEnemyCount = 0;
     this.wasMoving = false;
@@ -109,10 +132,23 @@ export class BattleScene extends Phaser.Scene {
     this.selectionBox = this.add.graphics();
     this.worldLayer.add(this.selectionBox);
 
+    // Призрак добавляется после тумана и рамки, иначе дымка его перекрывает.
+    this.formationPreview = new FormationPreview(this, this.worldLayer);
+    this.moveOrders = new MoveOrderSystem(this, this.worldLayer, this.terrain, this.pathfinder);
+
     this.buildHud();
     this.setupCameras();
 
-    this.cameraController = new CameraController(this, camera);
+    this.cursorView = new CursorView(this, this.uiLayer);
+    // Системный курсор прячем: свой рисует размер и цвет по состоянию.
+    this.input.setDefaultCursor('none');
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.input.setDefaultCursor('default');
+    });
+
+    this.cameraController = new CameraController(this, camera, {
+      isPointerBlocked: (pointer) => this.isPointerOverHud(pointer),
+    });
     this.setupInput();
 
     camera.fadeIn(280, 5, 14, 9);
@@ -120,12 +156,14 @@ export class BattleScene extends Phaser.Scene {
     this.updateZoomHud();
   }
 
-  update(_time: number, delta: number): void {
+  update(time: number, delta: number): void {
     if (this.leaving) {
       return;
     }
 
     this.cameraController.update(delta);
+    this.updatePointerState();
+    this.updateCursor(time);
 
     const unitsStarted = performance.now();
     let anyMoving = false;
@@ -135,6 +173,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const separated = this.separateUnits();
+    this.settleUnits();
     this.unitMs += performance.now() - unitsStarted;
 
     const fogStarted = performance.now();
@@ -317,12 +356,14 @@ export class BattleScene extends Phaser.Scene {
       color: '#9fbfae',
     });
 
+    const hintHeight = hint.height + 16;
+
     const hintPanel = this.add
-      .rectangle(24, VIEW_HEIGHT - 20, hint.width + 32, 34, COLORS.panel, 0.8)
+      .rectangle(24, VIEW_HEIGHT - 20, hint.width + 32, hintHeight, COLORS.panel, 0.8)
       .setOrigin(0, 1)
       .setStrokeStyle(1, 0x3f7f5b, 0.5);
 
-    hint.setPosition(40, VIEW_HEIGHT - 37).setOrigin(0, 0.5);
+    hint.setPosition(40, VIEW_HEIGHT - 20 - hintHeight / 2).setOrigin(0, 0.5);
 
     this.uiLayer.add([
       panel,
@@ -340,7 +381,7 @@ export class BattleScene extends Phaser.Scene {
     this.hudBounds.push(
       new Phaser.Geom.Rectangle(24, 24, 360, 116),
       new Phaser.Geom.Rectangle(VIEW_WIDTH - 24 - 152, 24, 152, 64),
-      new Phaser.Geom.Rectangle(24, VIEW_HEIGHT - 20 - 34, hint.width + 32, 34),
+      new Phaser.Geom.Rectangle(24, VIEW_HEIGHT - 20 - hintHeight, hint.width + 32, hintHeight),
     );
   }
 
@@ -367,8 +408,14 @@ export class BattleScene extends Phaser.Scene {
     this.input.on(Phaser.Input.Events.POINTER_MOVE, this.handlePointerMove, this);
     this.input.on(Phaser.Input.Events.POINTER_UP, this.handlePointerUp, this);
     this.input.on(Phaser.Input.Events.GAME_OUT, this.handleGameOut, this);
+    this.input.on(Phaser.Input.Events.GAME_OVER, this.handleGameOver, this);
+    this.game.events.on(Phaser.Core.Events.BLUR, this.handleBlur, this);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => {
+      this.game.events.off(Phaser.Core.Events.BLUR, this.handleBlur, this);
+    });
 
-    keyboard.on('keydown-ESC', this.clearSelection, this);
+    keyboard.on('keydown-ESC', this.handleEscape, this);
+    keyboard.on('keydown-R', this.reseatSelection, this);
     keyboard.on('keydown-M', this.returnToMenu, this);
     keyboard.on('keydown-A', (event: KeyboardEvent) => {
       if (event.ctrlKey || event.metaKey) {
@@ -379,20 +426,108 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private handlePointerDown(pointer: Phaser.Input.Pointer): void {
-    if (!pointer.leftButtonDown() || this.isPointerOverHud(pointer)) {
+    if (this.isPointerOverHud(pointer)) {
       return;
     }
 
-    this.pointerDownScreen.set(pointer.x, pointer.y);
-    this.dragStart = this.getPointerWorld(pointer);
-    this.dragMoved = false;
+    const left = pointer.leftButtonDown();
+    const right = pointer.rightButtonDown();
+
+    if (!left && !right) {
+      return;
+    }
+
+    this.pressScreen.set(pointer.x, pointer.y);
+    this.pressWorld = this.getPointerWorld(pointer);
+    this.pointerMode = left ? 'box' : 'order';
     this.selectionBox.clear();
     this.selectionBox.setVisible(false);
     this.clearHover();
   }
 
+  private pressDistance(pointer: Phaser.Input.Pointer): number {
+    return Phaser.Math.Distance.Between(
+      this.pressScreen.x,
+      this.pressScreen.y,
+      pointer.x,
+      pointer.y,
+    );
+  }
+
+  /** Курсор: размер и цвет зависят от того, что сейчас произойдёт по клику. */
+  private updateCursor(time: number): void {
+    const pointer = this.input.activePointer;
+
+    if (!this.pointerInsideCanvas) {
+      this.cursorView.hide();
+      return;
+    }
+
+    if (this.pointerMode === 'order' && this.pressWorld) {
+      const cursor = this.getPointerWorld(pointer);
+      const dragLength = Phaser.Math.Distance.Between(
+        this.pressWorld.x,
+        this.pressWorld.y,
+        cursor.x,
+        cursor.y,
+      );
+
+      if (dragLength < FORMATION_RIGID_DRAG) {
+        this.cursorView.update(pointer.x, pointer.y, 'rigid', 0, time);
+        return;
+      }
+
+      this.cursorView.update(
+        pointer.x,
+        pointer.y,
+        'order',
+        (dragLength - FORMATION_RIGID_DRAG) / FORMATION_SPACING,
+        time,
+      );
+      return;
+    }
+
+    if (this.pointerMode === 'box') {
+      this.cursorView.update(pointer.x, pointer.y, 'box', 1, time);
+      return;
+    }
+
+    const world = this.getPointerWorld(pointer);
+    const hovered = this.findPlayerUnitAt(world.x, world.y);
+
+    this.cursorView.update(pointer.x, pointer.y, hovered ? 'hover' : 'default', 1, time);
+  }
+
+  /** Рамка и призрак строя перерисовываются каждый кадр: камера едет сама. */
+  private updatePointerState(): void {
+    if (!this.pressWorld) {
+      return;
+    }
+
+    const pointer = this.input.activePointer;
+
+    if (this.pointerMode === 'box') {
+      if (this.pressDistance(pointer) <= DRAG_THRESHOLD) {
+        return;
+      }
+
+      this.drawSelectionBox(this.getSelectionRect(this.pressWorld, this.getPointerWorld(pointer)));
+      return;
+    }
+
+    if (this.pointerMode === 'order') {
+      this.formationPreview.update(
+        this.pressWorld,
+        this.getPointerWorld(pointer),
+        [...this.selected],
+        this.terrain,
+        this.cameras.main.zoom,
+      );
+    }
+  }
+
   private handlePointerMove(pointer: Phaser.Input.Pointer): void {
-    if (!this.dragStart) {
+    if (this.pointerMode === 'idle') {
       if (!pointer.isDown) {
         if (this.isPointerOverHud(pointer)) {
           this.clearHover();
@@ -403,34 +538,44 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    if (!pointer.isDown || !pointer.leftButtonDown()) {
+    if (!pointer.isDown) {
       return;
     }
 
-    const screenDistance = Phaser.Math.Distance.Between(
-      this.pointerDownScreen.x,
-      this.pointerDownScreen.y,
-      pointer.x,
-      pointer.y,
-    );
-
-    if (!this.dragMoved && screenDistance <= DRAG_THRESHOLD) {
-      return;
-    }
-
-    this.dragMoved = true;
-    this.input.setDefaultCursor('crosshair');
-
-    const current = this.getPointerWorld(pointer);
-    this.drawSelectionBox(this.getSelectionRect(this.dragStart, current));
+    // Курсор рисует CursorView: системный спрятан на всё время боя.
   }
 
   private handlePointerUp(pointer: Phaser.Input.Pointer): void {
     if (pointer.button === 2) {
-      // Панорама правой кнопкой не должна превращаться в приказ на движение.
-      if (!this.dragStart && !this.isPointerOverHud(pointer) && !this.cameraController.didDragPan()) {
-        this.issueMoveCommand(this.getPointerWorld(pointer));
+      const start = this.pressWorld;
+      const mode = this.pointerMode;
+
+      this.resetPointerState();
+
+      if (mode !== 'order' || !start || this.isPointerOverHud(pointer)) {
+        return;
       }
+
+      const cursor = this.getPointerWorld(pointer);
+      const dragLength = Phaser.Math.Distance.Between(start.x, start.y, cursor.x, cursor.y);
+      const facing = dragLength >= FORMATION_RIGID_DRAG ? directionFrom(start, cursor) : null;
+
+      if (facing) {
+        // Вектор длиннее минимального: строй перестраивается, ряд за рядом.
+        this.moveOrders.issueFormation(
+          [...this.selected],
+          start,
+          facing,
+          columnsForDrag(this.selected.size, dragLength - FORMATION_RIGID_DRAG),
+        );
+      } else {
+        // Короткий вектор — перенос как есть, с сохранением взаимных положений.
+        // Вектор длиннее дрожания руки ещё и разворачивает блок по своему направлению.
+        const turn = dragLength >= FORMATION_RIGID_MIN_TURN ? directionFrom(start, cursor) : null;
+
+        this.moveOrders.issueToPoint([...this.selected], start, turn);
+      }
+
       return;
     }
 
@@ -438,20 +583,17 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    const start = this.dragStart;
-    const wasDragging = this.dragMoved;
+    const mode = this.pointerMode;
+    const start = this.pressWorld;
+    const screenDistance = this.pressDistance(pointer);
 
-    this.dragStart = null;
-    this.dragMoved = false;
-    this.selectionBox.clear();
-    this.selectionBox.setVisible(false);
-    this.input.setDefaultCursor('default');
+    this.resetPointerState();
 
     if (!start) {
       return;
     }
 
-    if (wasDragging) {
+    if (mode === 'box' && screenDistance > DRAG_THRESHOLD) {
       const rectangle = this.getSelectionRect(start, this.getPointerWorld(pointer));
       const additive = this.shiftKey.isDown;
 
@@ -498,16 +640,12 @@ export class BattleScene extends Phaser.Scene {
     const point = this.getPointerWorld(pointer);
     const hovered = this.findPlayerUnitAt(point.x, point.y);
 
-    this.input.setDefaultCursor(hovered ? 'pointer' : 'default');
-
     for (const unit of this.units) {
       unit.setHovered(unit === hovered);
     }
   }
 
   private clearHover(): void {
-    this.input.setDefaultCursor('default');
-
     for (const unit of this.units) {
       unit.setHovered(false);
     }
@@ -517,11 +655,121 @@ export class BattleScene extends Phaser.Scene {
     return this.hudBounds.some((bounds) => bounds.contains(pointer.x, pointer.y));
   }
 
-  private handleGameOut(): void {
-    this.dragStart = null;
-    this.dragMoved = false;
+  private resetPointerState(): void {
+    this.pointerMode = 'idle';
+    this.pressWorld = null;
     this.selectionBox.clear();
     this.selectionBox.setVisible(false);
+    this.formationPreview.hide();
+  }
+
+  private handleEscape(): void {
+    this.resetPointerState();
+    this.clearSelection();
+  }
+
+  /**
+   * Отряд, которого столкнул сосед, сам возвращается на своё место в строю.
+   * Догоняем только рядом со слотом: далёкий отряд — это уже другой приказ.
+   */
+  private settleUnits(): void {
+    const now = this.time.now;
+
+    for (const unit of this.units) {
+      const post = unit.post;
+
+      if (!post || unit.isMoving()) {
+        continue;
+      }
+
+      const distance = Phaser.Math.Distance.Between(unit.x, unit.y, post.x, post.y);
+
+      if (distance <= FORMATION_SETTLE_TOLERANCE || distance > FORMATION_SETTLE_RANGE) {
+        continue;
+      }
+
+      if (!this.isPostReachable(unit, post)) {
+        continue;
+      }
+
+      // Пауза между попытками: иначе два отряда могут бесконечно дёргать друг друга.
+      const last = this.settleCooldown.get(unit) ?? 0;
+
+      if (now - last < FORMATION_SETTLE_COOLDOWN) {
+        continue;
+      }
+
+      this.settleCooldown.set(unit, now);
+      unit.moveAlong([post], unit.postFacing);
+    }
+  }
+
+  /**
+   * Своё место свободно и достижимо по прямой. Если слот занят соседом или
+   * отрезан водой/лесом, отряд остаётся стоять, а не толкается туда вечно.
+   */
+  private isPostReachable(unit: Unit, post: Phaser.Math.Vector2): boolean {
+    const minimum = UNIT_SIZE + 6;
+
+    for (const other of this.units) {
+      if (
+        other !== unit &&
+        Phaser.Math.Distance.Squared(other.x, other.y, post.x, post.y) < minimum * minimum
+      ) {
+        return false;
+      }
+    }
+
+    const dx = post.x - unit.x;
+    const dy = post.y - unit.y;
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / 20));
+
+    for (let step = 1; step <= steps; step += 1) {
+      if (
+        !this.terrain.isPassable(
+          unit.x + (dx * step) / steps,
+          unit.y + (dy * step) / steps,
+          unit.unitType.id,
+        )
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  /** Вернуть выделенные отряды на их места в строю, если их столкнули. */
+  private reseatSelection(): void {
+    for (const unit of this.selected) {
+      const post = unit.post;
+
+      if (!post || Phaser.Math.Distance.Between(unit.x, unit.y, post.x, post.y) < 1) {
+        continue;
+      }
+
+      const path = this.pathfinder.findPath(unit.x, unit.y, post.x, post.y, unit.unitType.id);
+
+      if (path.length > 0) {
+        unit.moveAlong(path, unit.postFacing);
+      }
+    }
+  }
+
+  private handleGameOut(): void {
+    this.pointerInsideCanvas = false;
+    this.cursorView.hide();
+    this.resetPointerState();
+    this.clearHover();
+  }
+
+  private handleGameOver(): void {
+    this.pointerInsideCanvas = true;
+  }
+
+  private handleBlur(): void {
+    this.cursorView.hide();
+    this.resetPointerState();
     this.clearHover();
   }
 
@@ -650,113 +898,6 @@ export class BattleScene extends Phaser.Scene {
     this.refreshHud();
   }
 
-  private issueMoveCommand(target: Phaser.Math.Vector2): void {
-    if (this.selected.size === 0) {
-      return;
-    }
-
-    const safeTarget = new Phaser.Math.Vector2(
-      Phaser.Math.Clamp(target.x, WORLD_MARGIN, WORLD_WIDTH - WORLD_MARGIN),
-      Phaser.Math.Clamp(target.y, WORLD_MARGIN, WORLD_HEIGHT - WORLD_MARGIN),
-    );
-
-    const ordered = [...this.selected].sort(
-      (first, second) =>
-        Phaser.Math.Distance.Squared(first.x, first.y, safeTarget.x, safeTarget.y) -
-        Phaser.Math.Distance.Squared(second.x, second.y, safeTarget.x, safeTarget.y),
-    );
-
-    this.spawnMoveMarker(safeTarget.x, safeTarget.y);
-
-    const slots = this.buildFormationSlots(ordered.length, safeTarget);
-    const taken: Phaser.Math.Vector2[] = [];
-
-    for (const unit of ordered) {
-      let bestIndex = 0;
-      let bestDistance = Number.POSITIVE_INFINITY;
-
-      slots.forEach((slot, index) => {
-        const distance = Phaser.Math.Distance.Squared(unit.x, unit.y, slot.x, slot.y);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          bestIndex = index;
-        }
-      });
-
-      const [slot] = slots.splice(bestIndex, 1);
-      // Слот в воде или в лесу для конницы переносится на ближайшую проходимую
-      // точку, иначе отряд встаёт на краю препятствия и не доходит до строя.
-      const slotTarget =
-        this.terrain.nearestPassablePoint(slot.x, slot.y, unit.unitType.id, taken) ?? slot;
-
-      taken.push(slotTarget);
-
-      const path = this.pathfinder.findPath(
-        unit.x,
-        unit.y,
-        slotTarget.x,
-        slotTarget.y,
-        unit.unitType.id,
-      );
-
-      if (path.length > 0) {
-        unit.moveAlong(path);
-      } else {
-        unit.stop();
-      }
-    }
-  }
-
-  private buildFormationSlots(count: number, center: Phaser.Math.Vector2): Phaser.Math.Vector2[] {
-    if (count <= 1) {
-      return [center.clone()];
-    }
-
-    const columns = Math.ceil(Math.sqrt(count));
-    const rows = Math.ceil(count / columns);
-    const startX = center.x - ((columns - 1) * FORMATION_SPACING) / 2;
-    const startY = center.y - ((rows - 1) * FORMATION_SPACING) / 2;
-    const slots: Phaser.Math.Vector2[] = [];
-
-    for (let row = 0; row < rows; row += 1) {
-      for (let column = 0; column < columns; column += 1) {
-        slots.push(
-          new Phaser.Math.Vector2(
-            Phaser.Math.Clamp(
-              startX + column * FORMATION_SPACING,
-              WORLD_MARGIN,
-              WORLD_WIDTH - WORLD_MARGIN,
-            ),
-            Phaser.Math.Clamp(
-              startY + row * FORMATION_SPACING,
-              WORLD_MARGIN,
-              WORLD_HEIGHT - WORLD_MARGIN,
-            ),
-          ),
-        );
-      }
-    }
-
-    return slots.slice(0, count);
-  }
-
-  private spawnMoveMarker(x: number, y: number): void {
-    const marker = this.add
-      .circle(x, y, 12, COLORS.accent, 0.12)
-      .setStrokeStyle(2, COLORS.accent, 0.9);
-
-    this.worldLayer.add(marker);
-
-    this.tweens.add({
-      targets: marker,
-      scale: 2.2,
-      alpha: 0,
-      duration: 450,
-      ease: 'Cubic.easeOut',
-      onComplete: () => marker.destroy(),
-    });
-  }
-
   private refreshVisibleEnemies(): void {
     let visible = 0;
 
@@ -842,6 +983,7 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.leaving = true;
+    this.cursorView.hide();
     this.cameras.main.fadeOut(200, 5, 10, 7);
     this.uiCamera.fadeOut(200, 5, 10, 7);
     this.cameras.main.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {

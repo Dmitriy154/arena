@@ -26,6 +26,10 @@
 | `src/game/systems/CameraController.ts` | зум и панорама | только камера |
 | `src/game/systems/Terrain.ts` | патчи леса и воды: проходимость, скорость, скрытность | новые типы местности, правка раскладки |
 | `src/game/systems/Pathfinder.ts` | A* по сетке, сглаживание пути | маршруты, обход препятствий |
+| `src/game/systems/Formation.ts` | точки строя, порядок отрядов, привязка к местности | формация, углы, раздача мест |
+| `src/game/systems/MoveOrderSystem.ts` | приказ в точку и строем, маркер приказа | изменение приказов движения |
+| `src/game/systems/FormationPreview.ts` | призрак строя в worldLayer | отрисовка превью построения |
+| `src/game/systems/CursorView.ts` | свой курсор: размер и цвет по состоянию | обратная связь по наведению и режимам мыши |
 | `src/game/systems/FogOfWar.ts` | два слоя тумана, видимость врагов | обзор, разведка, скрытность |
 | `src/game/scenes/BootScene.ts` | генерация текстур | ассеты и процедурные текстуры |
 | `src/game/scenes/MenuScene.ts` | меню | только меню |

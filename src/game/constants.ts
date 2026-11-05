@@ -6,11 +6,24 @@ export const WORLD_HEIGHT = 2160;
 export const WORLD_MARGIN = 70;
 
 export const UNIT_SIZE = 50;
-export const FORMATION_SPACING = UNIT_SIZE + 38;
+export const FORMATION_SPACING = UNIT_SIZE + 27;
 /** Радиус поиска проходимой точки для слота строя. */
 export const FORMATION_SNAP_RADIUS = 220;
 /** Шаг кольцевого поиска проходимой точки. */
 export const FORMATION_SNAP_STEP = 20;
+/** Вектор короче этого переносит строй как есть, не перестраивая. */
+export const FORMATION_RIGID_DRAG = FORMATION_SPACING;
+/** Ниже этой длины вектор считается дрожанием руки: строй едет, но не крутится. */
+export const FORMATION_RIGID_MIN_TURN = 14;
+/** Насколько отряд должен сойти с места, чтобы самому вернуться в строй. */
+export const FORMATION_SETTLE_TOLERANCE = 6;
+/** Дальше этого от своего места отряд не догоняет: там уже был другой приказ. */
+export const FORMATION_SETTLE_RANGE = FORMATION_SPACING * 1.5;
+/** Пауза между попытками вернуться на место, мс: не даёт отрядам дёргаться. */
+export const FORMATION_SETTLE_COOLDOWN = 500;
+export const FORMATION_PREVIEW_FILL_ALPHA = 0.1;
+export const FORMATION_PREVIEW_LINE_ALPHA = 0.85;
+export const FORMATION_PREVIEW_LINE_WIDTH = 1.5;
 
 export const CAMERA_MIN_ZOOM = 0.55;
 export const CAMERA_MAX_ZOOM = 2.4;
@@ -18,6 +31,12 @@ export const CAMERA_START_ZOOM = 2 / 3;
 export const CAMERA_ZOOM_STEP = 1.18;
 export const CAMERA_ZOOM_SMOOTHING = 14;
 export const CAMERA_PAN_SPEED = 760;
+/** Ширина краевой зоны, у которой камера едет сама, экранные px. */
+export const EDGE_SCROLL_MARGIN = 24;
+/** Скорость панорамы у самой кромки экрана, экранные px/с. */
+export const CAMERA_EDGE_SCROLL_SPEED = 900;
+/** Зона у края, где курсор показывает, что камера поедет. */
+export const EDGE_HINT_MARGIN = 64;
 
 export const DRAG_THRESHOLD = 6;
 
@@ -66,6 +85,7 @@ export const COLORS = {
   grass: 0x3c663d,
   border: 0x1b261d,
   accent: 0x8cf2b5,
+  rigid: 0x9fd8ff,
   text: '#d9ece1',
   textMuted: '#87a894',
   panel: 0x0a1710,
